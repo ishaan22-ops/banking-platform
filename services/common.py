@@ -18,21 +18,33 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def build_database(service: str) -> tuple[Engine, sessionmaker[Session]]:
-    path = os.getenv("DATA_DIR", "data")
-    os.makedirs(path, exist_ok=True)
-    database_path = os.path.abspath(os.path.join(path, f"{service}.db"))
-    engine = create_engine(
-        URL.create("sqlite", database=database_path),
-        connect_args={"check_same_thread": False, "timeout": 30},
-        pool_pre_ping=True,
-    )
-
-    @event.listens_for(engine, "connect")
-    def enable_foreign_keys(connection: object, _record: object) -> None:
-        cursor = connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        options: dict[str, object] = {"pool_pre_ping": True}
+        if database_url.startswith("sqlite"):
+            options["connect_args"] = {"check_same_thread": False, "timeout": 30}
+        engine = create_engine(database_url, **options)
+        if database_url.startswith("sqlite"):
+            @event.listens_for(engine, "connect")
+            def enable_foreign_keys(connection: object, _record: object) -> None:
+                cursor = connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.close()
+    else:
+        password = os.getenv("DB_PASSWORD")
+        if not password and os.getenv("APP_ENV", "development").lower() == "production":
+            raise RuntimeError(f"DB_PASSWORD must be configured for the {service} service.")
+        engine = create_engine(
+            URL.create(
+                "postgresql+psycopg",
+                username=os.getenv("DB_USER", f"harbor_{service}"),
+                password=password or "harbor-local-only",
+                host=os.getenv("DB_HOST", "localhost"),
+                port=int(os.getenv("DB_PORT", "5432")),
+                database=os.getenv("DB_NAME", f"harbor_{service}"),
+            ),
+            pool_pre_ping=True,
+        )
     return engine, sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 

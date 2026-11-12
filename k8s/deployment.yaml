@@ -26,6 +26,22 @@ spec:
           env:
             - name: PUBLIC_BASE_URL
               value: https://bank.example.com
+            - name: DB_HOST
+              value: harbor-postgres
+            - name: DB_NAME
+              value: harbor_gateway
+            - name: DB_USER
+              value: harbor_gateway
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: gateway-db-password
+            - name: INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: internal-api-key
             - name: AUTH_SERVICE_URL
               value: http://harbor-auth:8000
             - name: ACCOUNTS_SERVICE_URL
@@ -101,16 +117,22 @@ spec:
               value: production
             - name: SEED_DEMO_DATA
               value: "false"
-            - name: DATA_DIR
-              value: /data
+            - name: DB_HOST
+              value: harbor-postgres
+            - name: DB_NAME
+              value: harbor_auth
+            - name: DB_USER
+              value: harbor_auth
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: auth-db-password
             - name: INTERNAL_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: harbor-banking-secrets
                   key: internal-api-key
-          volumeMounts:
-            - name: data
-              mountPath: /data
           readinessProbe:
             httpGet:
               path: /health
@@ -131,20 +153,6 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: harbor-auth-data
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: harbor-auth-data
-spec:
-  accessModes: ["ReadWriteOnce"]
-  resources:
-    requests:
-      storage: 1Gi
 ---
 apiVersion: v1
 kind: Service
@@ -185,8 +193,17 @@ spec:
             - name: http
               containerPort: 8000
           env:
-            - name: DATA_DIR
-              value: /data
+            - name: DB_HOST
+              value: harbor-postgres
+            - name: DB_NAME
+              value: harbor_accounts
+            - name: DB_USER
+              value: harbor_accounts
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: accounts-db-password
             - name: AUTH_SERVICE_URL
               value: http://harbor-auth:8000
             - name: TRANSACTIONS_SERVICE_URL
@@ -196,9 +213,6 @@ spec:
                 secretKeyRef:
                   name: harbor-banking-secrets
                   key: internal-api-key
-          volumeMounts:
-            - name: data
-              mountPath: /data
           readinessProbe:
             httpGet:
               path: /health
@@ -219,20 +233,6 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: harbor-accounts-data
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: harbor-accounts-data
-spec:
-  accessModes: ["ReadWriteOnce"]
-  resources:
-    requests:
-      storage: 1Gi
 ---
 apiVersion: v1
 kind: Service
@@ -272,6 +272,17 @@ spec:
             - name: http
               containerPort: 8000
           env:
+            - name: DB_HOST
+              value: harbor-postgres
+            - name: DB_NAME
+              value: harbor_transfers
+            - name: DB_USER
+              value: harbor_transfers
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: transfers-db-password
             - name: AUTH_SERVICE_URL
               value: http://harbor-auth:8000
             - name: ACCOUNTS_SERVICE_URL
@@ -343,8 +354,19 @@ spec:
             - name: http
               containerPort: 8000
           env:
-            - name: DATA_DIR
-              value: /data
+            - name: MONGO_HOST
+              value: harbor-mongo
+            - name: MONGO_PORT
+              value: "27017"
+            - name: MONGO_DATABASE
+              value: harbor_transactions
+            - name: MONGO_USER
+              value: harbor_transactions
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: mongo-app-password
             - name: AUTH_SERVICE_URL
               value: http://harbor-auth:8000
             - name: INTERNAL_API_KEY
@@ -352,9 +374,6 @@ spec:
                 secretKeyRef:
                   name: harbor-banking-secrets
                   key: internal-api-key
-          volumeMounts:
-            - name: data
-              mountPath: /data
           readinessProbe:
             httpGet:
               path: /health
@@ -375,20 +394,6 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: harbor-transactions-data
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: harbor-transactions-data
-spec:
-  accessModes: ["ReadWriteOnce"]
-  resources:
-    requests:
-      storage: 1Gi
 ---
 apiVersion: v1
 kind: Service
@@ -428,6 +433,17 @@ spec:
             - name: http
               containerPort: 8000
           env:
+            - name: DB_HOST
+              value: harbor-postgres
+            - name: DB_NAME
+              value: harbor_assistant
+            - name: DB_USER
+              value: harbor_assistant
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: assistant-db-password
             - name: AUTH_SERVICE_URL
               value: http://harbor-auth:8000
             - name: INTERNAL_API_KEY
@@ -473,3 +489,214 @@ spec:
     - name: http
       port: 8000
       targetPort: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: harbor-postgres
+spec:
+  serviceName: harbor-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: harbor-postgres
+  template:
+    metadata:
+      labels:
+        app: harbor-postgres
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+      containers:
+        - name: postgres
+          image: harbor-banking-postgres:latest
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: harbor_admin
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: postgres-admin-password
+            - name: GATEWAY_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: gateway-db-password
+            - name: AUTH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: auth-db-password
+            - name: ACCOUNTS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: accounts-db-password
+            - name: TRANSFERS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: transfers-db-password
+            - name: ASSISTANT_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: assistant-db-password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "harbor_admin", "-d", "postgres"]
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "harbor_admin", "-d", "postgres"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: run
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harbor-postgres
+spec:
+  selector:
+    app: harbor-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harbor-mongo-init
+data:
+  init-user.js: |
+    db.createUser({
+      user: "harbor_transactions",
+      pwd: process.env.MONGO_APP_PASSWORD,
+      roles: [{ role: "readWrite", db: "harbor_transactions" }],
+    });
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: harbor-mongo
+spec:
+  serviceName: harbor-mongo
+  replicas: 1
+  selector:
+    matchLabels:
+      app: harbor-mongo
+  template:
+    metadata:
+      labels:
+        app: harbor-mongo
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: mongo
+          image: mongo:7
+          ports:
+            - name: mongo
+              containerPort: 27017
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: harbor_admin
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: mongo-root-password
+            - name: MONGO_INITDB_DATABASE
+              value: harbor_transactions
+            - name: MONGO_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: mongo-app-password
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+            - name: init-script
+              mountPath: /docker-entrypoint-initdb.d/init-user.js
+              subPath: init-user.js
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - mongosh --quiet --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "db.adminCommand('ping').ok"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: init-script
+          configMap:
+            name: harbor-mongo-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harbor-mongo
+spec:
+  selector:
+    app: harbor-mongo
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: mongo

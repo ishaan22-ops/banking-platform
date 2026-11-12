@@ -1,9 +1,28 @@
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+
 import httpx
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import DateTime, Integer
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.assistant import answer_question
-from services.common import current_user
+from services.common import ServiceBase, build_database, current_user, get_db
+
+engine, session_factory = build_database("assistant")
+
+
+class ChatAudit(ServiceBase):
+    __tablename__ = "chat_audit"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    question_length: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
 
 
 class ChatRequest(BaseModel):
@@ -18,7 +37,15 @@ class ChatRequest(BaseModel):
         return question
 
 
-app = FastAPI(title="Harbor Assistant Service")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    ServiceBase.metadata.create_all(engine)
+    yield
+    engine.dispose()
+
+
+app = FastAPI(title="Harbor Assistant Service", lifespan=lifespan)
+app.state.session_factory = session_factory
 
 
 @app.get("/health")
@@ -29,7 +56,8 @@ def health() -> dict[str, str]:
 @app.post("/api/chat")
 async def chat(
     payload: ChatRequest,
-    _user: dict[str, object] = Depends(current_user),
+    user: dict[str, object] = Depends(current_user),
+    db: Session = Depends(get_db),
 ) -> dict[str, str]:
     try:
         answer = await answer_question(payload.question)
@@ -45,4 +73,6 @@ async def chat(
         ) from exc
     if not isinstance(answer, str) or not answer.strip():
         raise HTTPException(status_code=502, detail="The AI assistant returned an empty response.")
+    db.add(ChatAudit(user_id=int(user["id"]), question_length=len(payload.question)))
+    db.commit()
     return {"answer": answer.strip()}

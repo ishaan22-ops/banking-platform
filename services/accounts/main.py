@@ -124,7 +124,15 @@ async def index_entry(entry: LedgerEntry, operation_key: str) -> None:
         },
     )
     if response.status_code not in (200, 201):
-        raise HTTPException(status_code=503, detail="Transaction search is temporarily unavailable; retry safely.")
+        try:
+            response_detail = response.json().get("detail", "")
+        except ValueError:
+            response_detail = ""
+        suffix = f" ({response_detail})" if response_detail else ""
+        raise HTTPException(
+            status_code=503,
+            detail=f"Transaction search rejected a ledger entry; retry safely{suffix}.",
+        )
 
 
 def ensure_same_transfer(

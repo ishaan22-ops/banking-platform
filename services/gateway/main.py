@@ -1,6 +1,9 @@
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import html
 import os
 from pathlib import Path
+from time import perf_counter
 from urllib.parse import urlparse
 from xml.sax.saxutils import escape as xml_escape
 
@@ -8,8 +11,13 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import DateTime, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column
+
+from services.common import ServiceBase, build_database
 
 STATIC_DIR = Path(__file__).parents[2] / "app" / "static"
+engine, session_factory = build_database("gateway")
 ROUTES = (
     ("/api/auth", "AUTH_SERVICE_URL", "http://auth:8000"),
     ("/api/account", "ACCOUNTS_SERVICE_URL", "http://accounts:8000"),
@@ -19,7 +27,35 @@ ROUTES = (
     ("/api/chat", "ASSISTANT_SERVICE_URL", "http://assistant:8000"),
 )
 
-app = FastAPI(title="Harbor API Gateway", docs_url=None, redoc_url=None, openapi_url=None)
+
+class RequestAudit(ServiceBase):
+    __tablename__ = "gateway_request_audit"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    method: Mapped[str] = mapped_column(String(12))
+    path: Mapped[str] = mapped_column(String(200))
+    status_code: Mapped[int] = mapped_column(Integer)
+    duration_ms: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    ServiceBase.metadata.create_all(engine)
+    yield
+    engine.dispose()
+
+
+app = FastAPI(
+    title="Harbor API Gateway",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+    lifespan=lifespan,
+)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -41,7 +77,19 @@ def public_base_url() -> str:
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    started_at = perf_counter()
     response = await call_next(request)
+    if request.url.path != "/health":
+        with session_factory() as db:
+            db.add(
+                RequestAudit(
+                    method=request.method,
+                    path=request.url.path[:200],
+                    status_code=response.status_code,
+                    duration_ms=int((perf_counter() - started_at) * 1000),
+                )
+            )
+            db.commit()
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-Frame-Options"] = "DENY"

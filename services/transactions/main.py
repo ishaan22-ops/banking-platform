@@ -1,31 +1,28 @@
+import os
+import re
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, Index, Integer, String, or_, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Mapped, Session, mapped_column
+from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
 
-from services.common import ServiceBase, build_database, current_user, get_db, require_internal_key
+from services.common import current_user, require_internal_key
 
-engine, session_factory = build_database("transactions")
+MONGO_URL = os.getenv("MONGO_URL")
+MONGO_DATABASE = os.getenv("MONGO_DATABASE", "harbor_transactions")
+client: Any
+collection: Any
 
 
-class SearchTransaction(ServiceBase):
-    __tablename__ = "transaction_search"
-    __table_args__ = (
-        Index("ix_transaction_search_user_created", "user_id", "created_at"),
-        Index("ix_transaction_search_user_kind", "user_id", "kind"),
-    )
-
-    id: Mapped[str] = mapped_column(String(120), primary_key=True)
-    user_id: Mapped[int] = mapped_column(Integer, index=True)
-    operation_key: Mapped[str] = mapped_column(String(100), index=True)
-    kind: Mapped[str] = mapped_column(String(16))
-    amount_cents: Mapped[int] = mapped_column(Integer)
-    description: Mapped[str] = mapped_column(String(200))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+def to_epoch_milliseconds(value: datetime) -> int:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    utc_value = value.astimezone(timezone.utc)
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return int((utc_value - epoch) // timedelta(milliseconds=1))
 
 
 class IndexRequest(BaseModel):
@@ -38,34 +35,82 @@ class IndexRequest(BaseModel):
     created_at: datetime
 
 
+def create_client() -> Any:
+    if MONGO_URL and MONGO_URL.startswith("mongomock://"):
+        import mongomock
+
+        return mongomock.MongoClient(tz_aware=True)
+    if "MONGO_HOST" in os.environ:
+        return MongoClient(
+            host=os.environ["MONGO_HOST"],
+            port=int(os.getenv("MONGO_PORT", "27017")),
+            username=os.getenv("MONGO_USER"),
+            password=os.getenv("MONGO_PASSWORD"),
+            authSource=MONGO_DATABASE,
+            serverSelectionTimeoutMS=5000,
+            tz_aware=True,
+        )
+    if not MONGO_URL:
+        if os.getenv("APP_ENV", "development").lower() == "production":
+            raise RuntimeError("Configure MONGO_HOST or MONGO_URL for the transactions service.")
+        return MongoClient(
+            host="localhost",
+            port=27017,
+            username="harbor_transactions",
+            password="harbor-mongo-app-local",
+            authSource=MONGO_DATABASE,
+            serverSelectionTimeoutMS=5000,
+            tz_aware=True,
+        )
+    return MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000, tz_aware=True)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    ServiceBase.metadata.create_all(engine)
+    global client, collection
+    client = create_client()
+    client.admin.command("ping")
+    collection = client[MONGO_DATABASE]["transactions"]
+    collection.create_index([("user_id", 1), ("created_at", -1)])
+    collection.create_index([("user_id", 1), ("kind", 1)])
     yield
-    engine.dispose()
+    client.close()
 
 
-app = FastAPI(title="Harbor Transaction Search Service", lifespan=lifespan)
-app.state.session_factory = session_factory
+app = FastAPI(title="Harbor MongoDB Transaction Search Service", lifespan=lifespan)
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "transactions"}
+    client.admin.command("ping")
+    return {"status": "ok", "service": "transactions", "database": "mongodb"}
 
 
 @app.post("/internal/transactions", dependencies=[Depends(require_internal_key)])
-def index_transaction(payload: IndexRequest, db: Session = Depends(get_db)) -> dict[str, str]:
-    existing = db.get(SearchTransaction, payload.id)
-    if existing is None:
-        db.add(SearchTransaction(**payload.model_dump()))
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            existing = db.get(SearchTransaction, payload.id)
-            if existing is None:
-                raise
+def index_transaction(payload: IndexRequest) -> dict[str, str]:
+    document = payload.model_dump()
+    document["_id"] = document.pop("id")
+    try:
+        collection.insert_one(document)
+    except DuplicateKeyError:
+        existing = collection.find_one({"_id": document["_id"]})
+        mismatches = [
+            field
+            for field in ("operation_key", "user_id", "kind", "amount_cents", "description")
+            if existing is None or existing.get(field) != document[field]
+        ]
+        if existing is None:
+            mismatches.append("missing")
+        elif (
+            to_epoch_milliseconds(existing["created_at"])
+            != to_epoch_milliseconds(document["created_at"])
+        ):
+            mismatches.append("created_at")
+        if mismatches:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Transaction ID was already used for a different entry ({', '.join(mismatches)}).",
+            )
     return {"status": "indexed"}
 
 
@@ -75,37 +120,30 @@ def search_transactions(
     limit: int = Query(default=20, ge=1, le=50),
     offset: int = Query(default=0, ge=0, le=10000),
     user: dict[str, object] = Depends(current_user),
-    db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    query = select(SearchTransaction).where(SearchTransaction.user_id == user["id"])
+    query: dict[str, object] = {"user_id": user["id"]}
     search_text = q.strip()
     if search_text:
-        pattern = f"%{search_text}%"
-        query = query.where(
-            or_(
-                SearchTransaction.description.ilike(pattern),
-                SearchTransaction.kind.ilike(pattern),
-            )
-        )
-    entries = list(
-        db.scalars(
-            query.order_by(SearchTransaction.created_at.desc(), SearchTransaction.id.desc())
-            .limit(limit + 1)
-            .offset(offset)
-        )
-    )
-    has_more = len(entries) > limit
-    entries = entries[:limit]
+        pattern = re.escape(search_text)
+        query["$or"] = [
+            {"description": {"$regex": pattern, "$options": "i"}},
+            {"kind": {"$regex": pattern, "$options": "i"}},
+        ]
+
+    cursor = collection.find(query).sort([("created_at", -1), ("_id", -1)]).skip(offset).limit(limit + 1)
+    documents = list(cursor)
+    has_more = len(documents) > limit
+    documents = documents[:limit]
     return {
         "items": [
             {
-                "id": entry.id,
-                "kind": entry.kind,
-                "amount_cents": entry.amount_cents,
-                "description": entry.description,
-                "created_at": entry.created_at.isoformat(),
+                "id": document["_id"],
+                "kind": document["kind"],
+                "amount_cents": document["amount_cents"],
+                "description": document["description"],
+                "created_at": document["created_at"].isoformat(),
             }
-            for entry in entries
+            for document in documents
         ],
         "has_more": has_more,
         "limit": limit,

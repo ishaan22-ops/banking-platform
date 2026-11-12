@@ -1,13 +1,35 @@
 import os
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import DateTime, Integer, String
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from services.common import call_service, current_user, require_internal_key
+from services.common import ServiceBase, build_database, call_service, current_user, get_db
 
 ACCOUNTS_URL = os.getenv("ACCOUNTS_SERVICE_URL", "http://accounts:8000")
 TRANSACTIONS_URL = os.getenv("TRANSACTIONS_SERVICE_URL", "http://transactions:8000")
+engine, session_factory = build_database("transfers")
+
+
+def now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class TransferRecord(ServiceBase):
+    __tablename__ = "transfer_requests"
+
+    idempotency_key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    sender_id: Mapped[int] = mapped_column(Integer, index=True)
+    recipient_email: Mapped[str] = mapped_column(String(254))
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    description: Mapped[str] = mapped_column(String(100))
+    transaction_id: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class TransferRequest(BaseModel):
@@ -45,7 +67,15 @@ class TransferRequest(BaseModel):
         return int(self.amount * 100)
 
 
-app = FastAPI(title="Harbor Transfers Service")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    ServiceBase.metadata.create_all(engine)
+    yield
+    engine.dispose()
+
+
+app = FastAPI(title="Harbor Transfers Service", lifespan=lifespan)
+app.state.session_factory = session_factory
 
 
 @app.get("/health")
@@ -58,9 +88,25 @@ async def create_transfer(
     payload: TransferRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: dict[str, object] = Depends(current_user),
+    db: Session = Depends(get_db),
 ) -> dict[str, object]:
     if not idempotency_key or len(idempotency_key) < 8 or len(idempotency_key) > 100:
         raise HTTPException(status_code=400, detail="A valid Idempotency-Key header is required.")
+    existing = db.get(TransferRecord, idempotency_key)
+    if existing is not None:
+        if (
+            existing.sender_id != int(user["id"])
+            or existing.recipient_email != payload.recipient_email
+            or existing.amount_cents != payload.amount_cents
+            or existing.description != payload.description
+        ):
+            raise HTTPException(status_code=409, detail="Idempotency-Key was already used for a different transfer.")
+        return {
+            "status": "completed",
+            "transaction_id": existing.transaction_id,
+            "amount_cents": existing.amount_cents,
+            "currency": "USD",
+        }
     response = await call_service(
         ACCOUNTS_URL,
         "POST",
@@ -101,4 +147,28 @@ async def create_transfer(
                 status_code=503,
                 detail="Transfer completed. Search indexing is delayed; retry with the same Idempotency-Key.",
             )
+    db.add(
+        TransferRecord(
+            idempotency_key=idempotency_key,
+            sender_id=int(user["id"]),
+            recipient_email=payload.recipient_email,
+            amount_cents=payload.amount_cents,
+            description=payload.description,
+            transaction_id=str(result["transaction_id"]),
+        )
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.get(TransferRecord, idempotency_key)
+        if existing is None:
+            raise HTTPException(status_code=503, detail="Transfer history could not be saved; retry safely.")
+        if (
+            existing.sender_id != int(user["id"])
+            or existing.recipient_email != payload.recipient_email
+            or existing.amount_cents != payload.amount_cents
+            or existing.description != payload.description
+        ):
+            raise HTTPException(status_code=409, detail="Idempotency-Key was already used for a different transfer.")
     return {key: value for key, value in result.items() if key != "entries"}

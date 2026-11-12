@@ -1,3 +1,4 @@
+import sqlite3
 import os
 import socket
 import subprocess
@@ -7,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
+from contextlib import closing
 
 import httpx
 import pytest
@@ -28,7 +30,7 @@ def available_port() -> int:
 
 
 @pytest.fixture(scope="module")
-def banking_stack() -> Iterator[tuple[httpx.Client, list[subprocess.Popen[bytes]]]]:
+def banking_stack() -> Iterator[tuple[httpx.Client, list[subprocess.Popen[bytes]], str]]:
     ports = {service: available_port() for service in SERVICE_MODULES}
     urls = {service: f"http://127.0.0.1:{port}" for service, port in ports.items()}
     processes: list[subprocess.Popen[bytes]] = []
@@ -65,7 +67,20 @@ def banking_stack() -> Iterator[tuple[httpx.Client, list[subprocess.Popen[bytes]
                         str(ports[name]),
                     ],
                     cwd=os.path.dirname(os.path.dirname(__file__)),
-                    env=environment,
+                    env={
+                        **environment,
+                        **(
+                            {
+                                "MONGO_URL": "mongomock://localhost",
+                                "MONGO_DATABASE": "harbor_transactions",
+                            }
+                            if name == "transactions"
+                            else {
+                                "DATABASE_URL": "sqlite:///"
+                                + os.path.abspath(os.path.join(data_dir, f"{name}.db")).replace("\\", "/")
+                            }
+                        ),
+                    },
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -83,7 +98,7 @@ def banking_stack() -> Iterator[tuple[httpx.Client, list[subprocess.Popen[bytes]
                 else:
                     raise RuntimeError(f"{name} did not become healthy.")
             with httpx.Client(base_url=urls["gateway"], timeout=10.0) as client:
-                yield client, processes
+                yield client, processes, data_dir
         finally:
             for process in reversed(processes):
                 if process.poll() is None:
@@ -105,9 +120,9 @@ def create_account(client: httpx.Client, email: str) -> dict[str, str]:
 
 
 def test_six_services_work_together_for_registration_deposit_transfer_and_search(
-    banking_stack: tuple[httpx.Client, list[subprocess.Popen[bytes]]],
+    banking_stack: tuple[httpx.Client, list[subprocess.Popen[bytes]], str],
 ) -> None:
-    client, _processes = banking_stack
+    client, _processes, _data_dir = banking_stack
     sender = create_account(client, "sender@example.com")
     recipient = create_account(client, "recipient@example.com")
     sender_headers = {"Authorization": f"Bearer {sender['access_token']}"}
@@ -126,7 +141,7 @@ def test_six_services_work_together_for_registration_deposit_transfer_and_search
         "/api/demo-deposits",
         headers={**sender_headers, "Idempotency-Key": deposit_key},
     )
-    assert repeated_deposit.status_code == 201
+    assert repeated_deposit.status_code == 201, repeated_deposit.text
     assert client.get("/api/account", headers=sender_headers).json()["balance_cents"] == 50_000
     other_user_key = client.post(
         "/api/demo-deposits",
@@ -175,9 +190,9 @@ def test_six_services_work_together_for_registration_deposit_transfer_and_search
 
 
 def test_auth_assistant_and_seo_surfaces(
-    banking_stack: tuple[httpx.Client, list[subprocess.Popen[bytes]]],
+    banking_stack: tuple[httpx.Client, list[subprocess.Popen[bytes]], str],
 ) -> None:
-    client, _processes = banking_stack
+    client, _processes, _data_dir = banking_stack
     login = client.post(
         "/api/auth/login",
         json={"email": "demo@example.com", "password": "Demo123!"},
@@ -198,3 +213,27 @@ def test_auth_assistant_and_seo_surfaces(
     assert "Sitemap:" in client.get("/robots.txt").text
     assert "<urlset" in client.get("/sitemap.xml").text
     assert "http://127.0.0.1:" in client.get("/").text
+
+
+def test_each_postgres_service_has_its_own_database(
+    banking_stack: tuple[httpx.Client, list[subprocess.Popen[bytes]], str],
+) -> None:
+    client, _processes, data_dir = banking_stack
+    expected_tables = {
+        "gateway": "gateway_request_audit",
+        "auth": "users",
+        "accounts": "accounts",
+        "transfers": "transfer_requests",
+        "assistant": "chat_audit",
+    }
+    for service, table in expected_tables.items():
+        database_path = os.path.join(data_dir, f"{service}.db")
+        assert os.path.isfile(database_path)
+        with closing(sqlite3.connect(database_path)) as connection:
+            row = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+        assert row is not None, f"{service} database is missing its {table} table"
+    assert client.get("/health").json()["service"] == "gateway"
+    assert client.get("/api/transactions").status_code == 401
