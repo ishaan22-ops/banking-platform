@@ -73,6 +73,11 @@ input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px #157c781a; }
 .transfer-panel form input { height: 38px; }
 .transfer-panel .primary-button { min-height: 40px; margin-top: 17px; }
 .transactions-panel, .chat-panel { margin-top: 20px; }
+.transfers-panel { margin-top: 20px; }
+.transaction-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.transaction-filters label { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
+.transaction-filters select, .transaction-filters input { width: auto; height: 38px; min-width: 120px; }
+.transaction-filters .search-wrap { display: block; width: 190px; }
 .search-wrap { position: relative; width: 230px; }
 .search-wrap > span:not(.visually-hidden) { position: absolute; top: 8px; left: 12px; color: var(--muted); font-size: 20px; }
 .search-wrap input { padding-left: 35px; }
@@ -113,6 +118,8 @@ input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px #157c781a; }
 
 @media (max-width: 460px) {
   .dashboard-heading h1 { font-size: 25px; }
+  .transaction-filters { width: 100%; }
+  .transaction-filters .search-wrap { width: 100%; }
   .search-wrap { width: 150px; }
   .transactions-panel .panel-heading { align-items: flex-start; flex-direction: column; }
   .search-wrap { width: 100%; }

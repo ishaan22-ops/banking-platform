@@ -5,13 +5,26 @@ from collections.abc import Generator
 import httpx
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.engine import Engine, URL
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
 class ServiceBase(DeclarativeBase):
     pass
+
+
+def database_ready(engine: Engine, service: str) -> dict[str, str]:
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"The {service} database is unavailable.",
+        ) from exc
+    return {"status": "ok", "service": service, "database": "ok"}
 
 
 bearer_scheme = HTTPBearer(auto_error=False)

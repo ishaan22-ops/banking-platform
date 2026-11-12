@@ -2,12 +2,12 @@ import os
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from pymongo import MongoClient
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from services.common import current_user, require_internal_key
 
@@ -23,6 +23,12 @@ def to_epoch_milliseconds(value: datetime) -> int:
     utc_value = value.astimezone(timezone.utc)
     epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
     return int((utc_value - epoch) // timedelta(milliseconds=1))
+
+
+def as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class IndexRequest(BaseModel):
@@ -72,7 +78,7 @@ async def lifespan(_app: FastAPI):
     client.admin.command("ping")
     collection = client[MONGO_DATABASE]["transactions"]
     collection.create_index([("user_id", 1), ("created_at", -1)])
-    collection.create_index([("user_id", 1), ("kind", 1)])
+    collection.create_index([("user_id", 1), ("kind", 1), ("created_at", -1)])
     yield
     client.close()
 
@@ -82,7 +88,18 @@ app = FastAPI(title="Harbor MongoDB Transaction Search Service", lifespan=lifesp
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    client.admin.command("ping")
+    return {"status": "ok", "service": "transactions", "database": "mongodb"}
+
+
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    try:
+        client.admin.command("ping")
+    except PyMongoError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The transactions database is unavailable.",
+        ) from exc
     return {"status": "ok", "service": "transactions", "database": "mongodb"}
 
 
@@ -117,11 +134,33 @@ def index_transaction(payload: IndexRequest) -> dict[str, str]:
 @app.get("/api/transactions")
 def search_transactions(
     q: str = Query(default="", max_length=100),
+    kind: Literal["credit", "debit"] | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
     limit: int = Query(default=20, ge=1, le=50),
     offset: int = Query(default=0, ge=0, le=10000),
     user: dict[str, object] = Depends(current_user),
 ) -> dict[str, object]:
     query: dict[str, object] = {"user_id": user["id"]}
+    if kind is not None:
+        query["kind"] = kind
+    date_filter: dict[str, datetime] = {}
+    start_utc = as_utc(start_date) if start_date is not None else None
+    end_utc = as_utc(end_date) if end_date is not None else None
+    if start_date is not None:
+        date_filter["$gte"] = start_utc
+    if end_date is not None:
+        date_filter["$lte"] = end_utc
+    if date_filter:
+        query["created_at"] = date_filter
+    if (
+        start_date is not None
+        and end_date is not None
+        and start_utc is not None
+        and end_utc is not None
+        and start_utc > end_utc
+    ):
+        raise HTTPException(status_code=422, detail="start_date must be earlier than or equal to end_date.")
     search_text = q.strip()
     if search_text:
         pattern = re.escape(search_text)

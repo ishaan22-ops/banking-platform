@@ -85,7 +85,7 @@ def banking_stack() -> Iterator[tuple[httpx.Client, list[subprocess.Popen[bytes]
                     stderr=subprocess.DEVNULL,
                 )
                 processes.append(process)
-                health_url = f"{urls[name]}/health"
+                health_url = f"{urls[name]}/ready"
                 for _ in range(100):
                     if process.poll() is not None:
                         raise RuntimeError(f"{name} exited with code {process.returncode} during startup.")
@@ -171,21 +171,60 @@ def test_six_services_work_together_for_registration_deposit_transfer_and_search
     assert conflict.status_code == 409
     assert client.get("/api/account", headers=sender_headers).json()["balance_cents"] == 48_766
     assert client.get("/api/account", headers=recipient_headers).json()["balance_cents"] == 1234
+    sender_ledger = client.get(
+        "/api/account/ledger?limit=1",
+        headers=sender_headers,
+    )
+    assert sender_ledger.status_code == 200
+    assert len(sender_ledger.json()["items"]) == 1
+    assert sender_ledger.json()["has_more"] is True
+    assert client.get(
+        "/api/account/ledger?kind=credit",
+        headers=sender_headers,
+    ).json()["items"][0]["kind"] == "credit"
+    transfer_history = client.get("/api/transfers", headers=sender_headers)
+    assert transfer_history.status_code == 200
+    assert transfer_history.json()["items"][0]["idempotency_key"] == transfer_key
+    assert client.get("/api/transfers", headers=recipient_headers).json()["items"] == []
     insufficient = client.post(
         "/api/transfers",
         headers={**sender_headers, "Idempotency-Key": "transfer-test-0002"},
         json={"recipient_email": "recipient@example.com", "amount": "500.00", "description": "Too much"},
     )
     assert insufficient.status_code == 400
-    recipient_history = client.get("/api/transactions?q=lunch", headers=recipient_headers)
+    recipient_history = None
+    for _ in range(50):
+        response = client.get(
+            "/api/transactions?q=lunch&kind=credit",
+            headers=recipient_headers,
+        )
+        if response.status_code == 200 and response.json()["items"]:
+            recipient_history = response
+            break
+        time.sleep(0.1)
+    assert recipient_history is not None, "Recipient transaction was not indexed from the account outbox."
     assert recipient_history.status_code == 200
     assert len(recipient_history.json()["items"]) == 1
     assert recipient_history.json()["items"][0]["kind"] == "credit"
 
-    history = client.get("/api/transactions?q=lunch", headers=sender_headers)
+    history = None
+    for _ in range(50):
+        response = client.get(
+            "/api/transactions?q=lunch&kind=debit",
+            headers=sender_headers,
+        )
+        if response.status_code == 200 and response.json()["items"]:
+            history = response
+            break
+        time.sleep(0.1)
+    assert history is not None, "Sender transaction was not indexed from the account outbox."
     assert history.status_code == 200
     assert len(history.json()["items"]) == 1
     assert history.json()["items"][0]["kind"] == "debit"
+    assert client.get(
+        "/api/transactions?start_date=2026-12-01T00:00:00Z&end_date=2026-01-01T00:00:00Z",
+        headers=sender_headers,
+    ).status_code == 422
     assert client.get("/api/transactions").status_code == 401
 
 
@@ -210,6 +249,7 @@ def test_auth_assistant_and_seo_surfaces(
     assert client.post("/api/auth/logout", headers=headers).status_code == 204
     assert client.get("/api/account", headers=headers).status_code == 401
     assert client.get("/health").json()["service"] == "gateway"
+    assert client.get("/ready").json()["database"] == "ok"
     assert "Sitemap:" in client.get("/robots.txt").text
     assert "<urlset" in client.get("/sitemap.xml").text
     assert "http://127.0.0.1:" in client.get("/").text
@@ -220,20 +260,21 @@ def test_each_postgres_service_has_its_own_database(
 ) -> None:
     client, _processes, data_dir = banking_stack
     expected_tables = {
-        "gateway": "gateway_request_audit",
-        "auth": "users",
-        "accounts": "accounts",
-        "transfers": "transfer_requests",
-        "assistant": "chat_audit",
+        "gateway": ("gateway_request_audit",),
+        "auth": ("users",),
+        "accounts": ("accounts", "transaction_outbox"),
+        "transfers": ("transfer_requests",),
+        "assistant": ("chat_audit",),
     }
-    for service, table in expected_tables.items():
+    for service, tables in expected_tables.items():
         database_path = os.path.join(data_dir, f"{service}.db")
         assert os.path.isfile(database_path)
         with closing(sqlite3.connect(database_path)) as connection:
-            row = connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-                (table,),
-            ).fetchone()
-        assert row is not None, f"{service} database is missing its {table} table"
+            for table in tables:
+                row = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    (table,),
+                ).fetchone()
+                assert row is not None, f"{service} database is missing its {table} table"
     assert client.get("/health").json()["service"] == "gateway"
     assert client.get("/api/transactions").status_code == 401

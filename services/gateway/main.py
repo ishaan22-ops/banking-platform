@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from services.common import ServiceBase, build_database
+from services.common import ServiceBase, build_database, database_ready
 
 STATIC_DIR = Path(__file__).parents[2] / "app" / "static"
 engine, session_factory = build_database("gateway")
@@ -79,7 +79,7 @@ def public_base_url() -> str:
 async def security_headers(request: Request, call_next):
     started_at = perf_counter()
     response = await call_next(request)
-    if request.url.path != "/health":
+    if request.url.path not in {"/health", "/ready"}:
         with session_factory() as db:
             db.add(
                 RequestAudit(
@@ -109,6 +109,11 @@ def home() -> HTMLResponse:
 @app.get("/health", include_in_schema=False)
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "gateway"}
+
+
+@app.get("/ready", include_in_schema=False)
+def ready() -> dict[str, str]:
+    return database_ready(engine, "gateway")
 
 
 @app.get("/robots.txt", include_in_schema=False)

@@ -54,7 +54,7 @@ spec:
               value: http://harbor-assistant:8000
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
           livenessProbe:
             httpGet:
@@ -135,7 +135,7 @@ spec:
                   key: internal-api-key
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
           livenessProbe:
             httpGet:
@@ -215,7 +215,7 @@ spec:
                   key: internal-api-key
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
           livenessProbe:
             httpGet:
@@ -296,7 +296,7 @@ spec:
                   key: internal-api-key
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
           livenessProbe:
             httpGet:
@@ -376,7 +376,7 @@ spec:
                   key: internal-api-key
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
           livenessProbe:
             httpGet:
@@ -459,7 +459,7 @@ spec:
                   optional: true
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
           livenessProbe:
             httpGet:

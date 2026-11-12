@@ -13,7 +13,14 @@ from sqlalchemy import String, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from services.common import ServiceBase, build_database, get_db, require_internal_key, token_expired
+from services.common import (
+    ServiceBase,
+    build_database,
+    database_ready,
+    get_db,
+    require_internal_key,
+    token_expired,
+)
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PASSWORD_ITERATIONS = 310_000
@@ -110,6 +117,11 @@ app.state.session_factory = session_factory
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "identity"}
+
+
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    return database_ready(engine, "identity")
 
 
 @app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)

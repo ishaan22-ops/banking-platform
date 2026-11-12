@@ -49,6 +49,7 @@ function showDashboard() {
   transactionOffset = 0;
   loadAccount();
   loadTransactions(true);
+  loadTransferHistory();
 }
 
 async function loadAccount() {
@@ -94,13 +95,24 @@ async function loadTransactions(reset = false) {
     transactionOffset = 0;
     list.replaceChildren();
   }
-  const query = document.querySelector("#transaction-search").value.trim();
+  const search = document.querySelector("#transaction-search").value.trim();
+  const params = new URLSearchParams({
+    q: search,
+    limit: String(pageSize),
+    offset: String(transactionOffset),
+  });
+  const kind = document.querySelector("#transaction-kind").value;
+  const startDate = document.querySelector("#transaction-start").value;
+  const endDate = document.querySelector("#transaction-end").value;
+  if (kind) params.set("kind", kind);
+  if (startDate) params.set("start_date", `${startDate}T00:00:00.000Z`);
+  if (endDate) params.set("end_date", `${endDate}T23:59:59.999Z`);
   try {
-    const result = await api(`/api/transactions?q=${encodeURIComponent(query)}&limit=${pageSize}&offset=${transactionOffset}`);
+    const result = await api(`/api/transactions?${params}`);
     if (reset && result.items.length === 0) {
       const empty = document.createElement("p");
       empty.className = "empty-state";
-      empty.textContent = query ? "No matching transactions." : "Your activity will appear here.";
+      empty.textContent = search || kind || startDate || endDate ? "No matching transactions." : "Your activity will appear here.";
       list.append(empty);
     } else {
       result.items.forEach((item) => list.append(renderTransaction(item)));
@@ -114,6 +126,34 @@ async function loadTransactions(reset = false) {
       failure.textContent = error.message;
       list.append(failure);
     }
+  }
+}
+
+async function loadTransferHistory() {
+  const list = document.querySelector("#transfer-history-list");
+  list.replaceChildren();
+  try {
+    const result = await api("/api/transfers?limit=10");
+    if (result.items.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "empty-state";
+      empty.textContent = "Transfers you send will appear here.";
+      list.append(empty);
+      return;
+    }
+    result.items.forEach((transfer) => {
+      list.append(renderTransaction({
+        kind: "debit",
+        description: `To ${transfer.recipient_email}: ${transfer.description}`,
+        amount_cents: transfer.amount_cents,
+        created_at: transfer.created_at,
+      }));
+    });
+  } catch (error) {
+    const failure = document.createElement("p");
+    failure.className = "empty-state error";
+    failure.textContent = error.message;
+    list.append(failure);
   }
 }
 
@@ -207,6 +247,7 @@ document.querySelector("#transfer-form").addEventListener("submit", async (event
     setMessage(message, "Demo transfer completed.");
     await loadAccount();
     await loadTransactions(true);
+    await loadTransferHistory();
   } catch (error) {
     if ([400, 409, 422].includes(error.status)) transferIdempotencyKey = null;
     setMessage(message, error.message, true);
@@ -219,6 +260,10 @@ document.querySelector("#transaction-search").addEventListener("input", () => {
   window.clearTimeout(searchTimer);
   searchTimer = window.setTimeout(() => loadTransactions(true), 250);
 });
+
+for (const filter of ["#transaction-kind", "#transaction-start", "#transaction-end"]) {
+  document.querySelector(filter).addEventListener("change", () => loadTransactions(true));
+}
 
 document.querySelector("#load-more").addEventListener("click", () => loadTransactions());
 

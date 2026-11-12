@@ -1,11 +1,13 @@
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from services.common import (
@@ -13,12 +15,14 @@ from services.common import (
     build_database,
     call_service,
     current_user,
+    database_ready,
     get_db,
     require_internal_key,
 )
 
 engine, session_factory = build_database("accounts")
 SEARCH_URL = os.getenv("TRANSACTIONS_SERVICE_URL", "http://transactions:8000")
+logger = logging.getLogger(__name__)
 
 
 def now() -> datetime:
@@ -62,6 +66,21 @@ class LedgerEntry(ServiceBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
 
 
+class TransactionOutbox(ServiceBase):
+    __tablename__ = "transaction_outbox"
+
+    entry_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    operation_key: Mapped[str] = mapped_column(String(100))
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    description: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class InternalTransfer(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=100)
     sender_id: int
@@ -79,8 +98,16 @@ class InternalTransfer(BaseModel):
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     ServiceBase.metadata.create_all(engine)
-    yield
-    engine.dispose()
+    publisher = asyncio.create_task(publish_transaction_outbox())
+    try:
+        yield
+    finally:
+        publisher.cancel()
+        try:
+            await publisher
+        except asyncio.CancelledError:
+            pass
+        engine.dispose()
 
 
 app = FastAPI(title="Harbor Accounts Service", lifespan=lifespan)
@@ -90,6 +117,11 @@ app.state.session_factory = session_factory
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "accounts"}
+
+
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    return database_ready(engine, "accounts")
 
 
 def get_or_create_account(db: Session, user: dict[str, object]) -> Account:
@@ -108,31 +140,101 @@ def get_or_create_account(db: Session, user: dict[str, object]) -> Account:
     return account
 
 
-async def index_entry(entry: LedgerEntry, operation_key: str) -> None:
-    response = await call_service(
-        SEARCH_URL,
-        "POST",
-        "/internal/transactions",
-        json={
-            "id": entry.id,
-            "operation_key": operation_key,
-            "user_id": entry.user_id,
-            "kind": entry.kind,
-            "amount_cents": entry.amount_cents,
-            "description": entry.description,
-            "created_at": entry.created_at.isoformat(),
-        },
-    )
-    if response.status_code not in (200, 201):
-        try:
-            response_detail = response.json().get("detail", "")
-        except ValueError:
-            response_detail = ""
-        suffix = f" ({response_detail})" if response_detail else ""
-        raise HTTPException(
-            status_code=503,
-            detail=f"Transaction search rejected a ledger entry; retry safely{suffix}.",
+def queue_transaction_index(
+    db: Session,
+    entry: LedgerEntry,
+    operation_key: str,
+) -> None:
+    db.add(
+        TransactionOutbox(
+            entry_id=entry.id,
+            operation_key=operation_key,
+            user_id=entry.user_id,
+            kind=entry.kind,
+            amount_cents=entry.amount_cents,
+            description=entry.description,
+            created_at=entry.created_at,
         )
+    )
+
+
+def load_pending_outbox_events() -> list[dict[str, object]]:
+    with session_factory() as db:
+        pending = list(
+            db.scalars(
+                select(TransactionOutbox)
+                .where(
+                    TransactionOutbox.published_at.is_(None),
+                    TransactionOutbox.next_attempt_at <= now(),
+                )
+                .order_by(TransactionOutbox.created_at, TransactionOutbox.entry_id)
+                .limit(25)
+            )
+        )
+        return [
+            {
+                "entry_id": event.entry_id,
+                "operation_key": event.operation_key,
+                "user_id": event.user_id,
+                "kind": event.kind,
+                "amount_cents": event.amount_cents,
+                "description": event.description,
+                "created_at": event.created_at.isoformat(),
+            }
+            for event in pending
+        ]
+
+
+def update_outbox_attempt(entry_id: str, *, published: bool) -> None:
+    with session_factory() as db:
+        record = db.get(TransactionOutbox, entry_id)
+        if record is None or record.published_at is not None:
+            return
+        if published:
+            record.published_at = now()
+        else:
+            record.attempts += 1
+            retry_seconds = min(2 ** min(record.attempts, 8), 300)
+            record.next_attempt_at = now() + timedelta(seconds=retry_seconds)
+        db.commit()
+
+
+async def publish_transaction_outbox() -> None:
+    while True:
+        try:
+            events = await asyncio.to_thread(load_pending_outbox_events)
+            for event in events:
+                entry_id = str(event["entry_id"])
+                try:
+                    response = await call_service(
+                        SEARCH_URL,
+                        "POST",
+                        "/internal/transactions",
+                        json={
+                            "id": event["entry_id"],
+                            **{key: value for key, value in event.items() if key != "entry_id"},
+                        },
+                    )
+                except HTTPException as exc:
+                    logger.warning(
+                        "Transaction index delivery failed for %s: %s",
+                        entry_id,
+                        exc.detail,
+                    )
+                    await asyncio.to_thread(update_outbox_attempt, entry_id, published=False)
+                    continue
+                if response.status_code not in (200, 201):
+                    logger.warning(
+                        "Transaction index rejected entry %s with status %s",
+                        entry_id,
+                        response.status_code,
+                    )
+                    await asyncio.to_thread(update_outbox_attempt, entry_id, published=False)
+                    continue
+                await asyncio.to_thread(update_outbox_attempt, entry_id, published=True)
+        except SQLAlchemyError:
+            logger.exception("Transaction outbox database operation failed.")
+        await asyncio.sleep(1)
 
 
 def ensure_same_transfer(
@@ -169,6 +271,43 @@ def account_summary(
     }
 
 
+@app.get("/api/account/ledger")
+def account_ledger(
+    kind: str | None = Query(default=None, pattern="^(credit|debit)$"),
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0, le=10000),
+    user: dict[str, object] = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    account = get_or_create_account(db, user)
+    statement = select(LedgerEntry).where(LedgerEntry.account_id == account.id)
+    if kind is not None:
+        statement = statement.where(LedgerEntry.kind == kind)
+    entries = list(
+        db.scalars(
+            statement.order_by(LedgerEntry.created_at.desc(), LedgerEntry.id.desc())
+            .offset(offset)
+            .limit(limit + 1)
+        )
+    )
+    has_more = len(entries) > limit
+    return {
+        "items": [
+            {
+                "id": entry.id,
+                "kind": entry.kind,
+                "amount_cents": entry.amount_cents,
+                "description": entry.description,
+                "created_at": entry.created_at.isoformat(),
+            }
+            for entry in entries[:limit]
+        ],
+        "has_more": has_more,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 @app.post("/api/demo-deposits", status_code=status.HTTP_201_CREATED)
 async def demo_deposit(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -202,6 +341,8 @@ async def demo_deposit(
             description="Demo funds added",
         )
         db.add(entry)
+        db.flush()
+        queue_transaction_index(db, entry, idempotency_key)
         try:
             db.commit()
         except IntegrityError:
@@ -233,7 +374,6 @@ async def demo_deposit(
         entry = db.get(LedgerEntry, f"{idempotency_key}:deposit")
     if entry is None:
         raise HTTPException(status_code=500, detail="The deposit record could not be recovered.")
-    await index_entry(entry, idempotency_key)
     return {"status": "completed", "amount_cents": 50_000, "currency": "USD"}
 
 
@@ -297,6 +437,9 @@ async def internal_transfer(
             created_at=now_at,
         )
         db.add_all([operation, debit_entry, credit_entry])
+        db.flush()
+        queue_transaction_index(db, debit_entry, payload.idempotency_key)
+        queue_transaction_index(db, credit_entry, payload.idempotency_key)
         try:
             db.commit()
         except IntegrityError:

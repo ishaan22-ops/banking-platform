@@ -102,7 +102,7 @@ services:
       assistant:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -129,7 +129,7 @@ services:
       postgres-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -149,7 +149,6 @@ services:
       DB_PASSWORD: ${ACCOUNTS_DB_PASSWORD:-accounts-local-only}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-local-development-key}
       AUTH_SERVICE_URL: http://auth:8000
-      TRANSACTIONS_SERVICE_URL: http://transactions:8000
     depends_on:
       postgres:
         condition: service_healthy
@@ -157,10 +156,8 @@ services:
         condition: service_completed_successfully
       auth:
         condition: service_healthy
-      transactions:
-        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -181,7 +178,6 @@ services:
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-local-development-key}
       AUTH_SERVICE_URL: http://auth:8000
       ACCOUNTS_SERVICE_URL: http://accounts:8000
-      TRANSACTIONS_SERVICE_URL: http://transactions:8000
     depends_on:
       postgres:
         condition: service_healthy
@@ -191,10 +187,8 @@ services:
         condition: service_healthy
       accounts:
         condition: service_healthy
-      transactions:
-        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -221,7 +215,7 @@ services:
       auth:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -251,7 +245,7 @@ services:
       auth:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"]
       interval: 5s
       timeout: 3s
       retries: 10

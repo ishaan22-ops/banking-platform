@@ -22,7 +22,9 @@ Every microservice owns a separate database:
 | Transaction search | MongoDB database `harbor_transactions` for searchable ledger entries |
 | Assistant | PostgreSQL database `harbor_assistant` for minimal chat audit metadata |
 
-Compose runs one PostgreSQL server with a separate database, owner role, and password for each PostgreSQL service, plus a separate MongoDB server and database for transaction search. The Kubernetes deployment uses persistent PostgreSQL and MongoDB StatefulSets. Services do not share tables or database credentials. The account service commits both sides of each transfer atomically; the transfer service records successful requests and safely replays idempotent calls.
+Compose runs one PostgreSQL server with a separate database, owner role, and password for each PostgreSQL service, plus a separate MongoDB server and database for transaction search. The Kubernetes deployment uses persistent PostgreSQL and MongoDB StatefulSets. Services do not share tables or database credentials. Each service exposes its own API and OpenAPI schema; the gateway is the only public entry point in the deployment. The account service owns the authoritative ledger and commits both sides of each transfer atomically. It also writes transaction-search events to a durable outbox in the same database transaction, so a search outage does not block deposits or transfers. Search indexing retries in the background and is eventually consistent. The transfer service owns request history and safely replays idempotent calls.
+
+Each service has separate liveness (`/health`) and readiness (`/ready`) endpoints. Readiness checks that service's own database; Kubernetes and Compose use it to decide when the service can receive work. For local development, start one service and its dependencies with `docker compose up --build accounts`, replacing `accounts` with `auth`, `transfers`, `transactions`, or `assistant` as needed. The gateway is started with its required services by the regular full-stack command.
 
 > **Demo only:** This app does not connect to banks, payment networks, or real funds. It is not suitable for real banking, customer data, or production financial use.
 
@@ -48,13 +50,13 @@ The Compose defaults are for local development only. Set strong values for `POST
 ## Features
 
 - **Authentication:** registration, login, logout, hashed passwords, and expiring bearer sessions.
-- **Accounts:** user-scoped balance views and clearly labeled simulated deposits.
-- **Transfers:** atomic internal demo transfers, validation, and idempotent retries.
-- **Transaction search:** searchable activity with page-size limits and user/date/type database indexes.
+- **Accounts:** user-scoped balances, an authoritative paginated ledger, and clearly labeled idempotent demo deposits.
+- **Transfers:** atomic internal demo transfers, owner-scoped paginated transfer history, validation, and idempotent retries.
+- **Transaction search:** searchable activity with type/date filters, page-size limits, user/date/type indexes, and retryable asynchronous indexing.
 - **AI support:** authenticated assistant, local FAQ fallback, optional OpenAI chat completion.
 - **SEO and gateway:** landing-page metadata, canonical URL, `robots.txt`, `sitemap.xml`, API routing, and security headers.
 
-Search uses a dedicated service/database. Filters are scoped to the signed-in user and responses are paginated (up to 50 records per request).
+Search uses a dedicated service/database. Search and ledger filters are scoped to the signed-in user and responses are paginated (up to 50 records per request). Search indexing is eventually consistent; the account ledger remains the source of truth.
 
 ## Container image
 
@@ -99,7 +101,7 @@ Provision TLS for the public gateway before exposing traffic. The manifest uses 
 
 ## Test
 
-The integration tests launch all six services as separate local processes. For test isolation, the five PostgreSQL-backed service adapters use temporary SQLite files and the MongoDB adapter uses an in-memory MongoDB-compatible mock; container deployments use PostgreSQL and MongoDB as described above. Tests cover authentication, deposits, transfers, retries, search, chat, and gateway SEO:
+The integration tests launch all six services as separate local processes and verify their readiness endpoints. For test isolation, the five PostgreSQL-backed service adapters use temporary SQLite files and the MongoDB adapter uses an in-memory MongoDB-compatible mock; container deployments use PostgreSQL and MongoDB as described above. Tests cover authentication, deposits, ledger and transfer history, retries, search, chat, and gateway SEO:
 
 ```powershell
 pip install -r requirements-dev.txt

@@ -3,16 +3,22 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import DateTime, Integer, String
+from sqlalchemy import DateTime, Integer, String, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from services.common import ServiceBase, build_database, call_service, current_user, get_db
+from services.common import (
+    ServiceBase,
+    build_database,
+    call_service,
+    current_user,
+    database_ready,
+    get_db,
+)
 
 ACCOUNTS_URL = os.getenv("ACCOUNTS_SERVICE_URL", "http://accounts:8000")
-TRANSACTIONS_URL = os.getenv("TRANSACTIONS_SERVICE_URL", "http://transactions:8000")
 engine, session_factory = build_database("transfers")
 
 
@@ -83,6 +89,46 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "transfers"}
 
 
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    return database_ready(engine, "transfers")
+
+
+@app.get("/api/transfers")
+def transfer_history(
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0, le=10000),
+    user: dict[str, object] = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    records = list(
+        db.scalars(
+            select(TransferRecord)
+            .where(TransferRecord.sender_id == int(user["id"]))
+            .order_by(TransferRecord.created_at.desc(), TransferRecord.idempotency_key.desc())
+            .offset(offset)
+            .limit(limit + 1)
+        )
+    )
+    has_more = len(records) > limit
+    return {
+        "items": [
+            {
+                "idempotency_key": record.idempotency_key,
+                "recipient_email": record.recipient_email,
+                "amount_cents": record.amount_cents,
+                "description": record.description,
+                "transaction_id": record.transaction_id,
+                "created_at": record.created_at.isoformat(),
+            }
+            for record in records[:limit]
+        ],
+        "has_more": has_more,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 @app.post("/api/transfers", status_code=status.HTTP_201_CREATED)
 async def create_transfer(
     payload: TransferRequest,
@@ -135,18 +181,6 @@ async def create_transfer(
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=503, detail="The accounts service returned an invalid response.") from exc
 
-    for entry in entries:
-        indexed = await call_service(
-            TRANSACTIONS_URL,
-            "POST",
-            "/internal/transactions",
-            json=entry,
-        )
-        if indexed.status_code not in (200, 201):
-            raise HTTPException(
-                status_code=503,
-                detail="Transfer completed. Search indexing is delayed; retry with the same Idempotency-Key.",
-            )
     db.add(
         TransferRecord(
             idempotency_key=idempotency_key,

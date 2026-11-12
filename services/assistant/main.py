@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import DateTime, Integer
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.assistant import answer_question
-from services.common import ServiceBase, build_database, current_user, get_db
+from services.assistant.knowledge import answer_question
+from services.common import ServiceBase, build_database, current_user, database_ready, get_db
 
 engine, session_factory = build_database("assistant")
 
@@ -51,6 +51,11 @@ app.state.session_factory = session_factory
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "assistant"}
+
+
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    return database_ready(engine, "assistant")
 
 
 @app.post("/api/chat")

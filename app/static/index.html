@@ -70,10 +70,25 @@
         <section class="panel transactions-panel">
           <div class="panel-heading">
             <div><p class="eyebrow">YOUR ACTIVITY</p><h2>Transaction history</h2></div>
-            <label class="search-wrap"><span class="visually-hidden">Search transactions</span><span aria-hidden="true">⌕</span><input id="transaction-search" type="search" maxlength="100" placeholder="Search activity"></label>
+            <div class="transaction-filters">
+              <label>Type
+                <select id="transaction-kind">
+                  <option value="">All activity</option>
+                  <option value="credit">Money in</option>
+                  <option value="debit">Money out</option>
+                </select>
+              </label>
+              <label>From <input id="transaction-start" type="date"></label>
+              <label>To <input id="transaction-end" type="date"></label>
+              <label class="search-wrap"><span class="visually-hidden">Search transactions</span><span aria-hidden="true">⌕</span><input id="transaction-search" type="search" maxlength="100" placeholder="Search activity"></label>
+            </div>
           </div>
           <div id="transaction-list" class="transaction-list"></div>
           <button id="load-more" class="secondary-button hidden" type="button">Load more</button>
+        </section>
+        <section class="panel transfers-panel">
+          <div class="panel-heading"><div><p class="eyebrow">SENT BY YOU</p><h2>Transfer history</h2></div></div>
+          <div id="transfer-history-list" class="transaction-list"></div>
         </section>
         <section class="panel chat-panel">
           <div class="panel-heading"><div><p class="eyebrow">HARBOR ASSISTANT</p><h2>How can I help?</h2></div><span class="chat-status">● Here to help</span></div>
