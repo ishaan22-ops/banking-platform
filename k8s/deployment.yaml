@@ -1,20 +1,88 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: harbor-banking
-  labels:
-    app: harbor-banking
+  name: harbor-gateway
 spec:
-  replicas: 1
-  strategy:
-    type: Recreate
+  replicas: 2
   selector:
     matchLabels:
-      app: harbor-banking
+      app: harbor-gateway
   template:
     metadata:
       labels:
-        app: harbor-banking
+        app: harbor-gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+      containers:
+        - name: gateway
+          image: harbor-banking:latest
+          command: ["uvicorn", "services.gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: PUBLIC_BASE_URL
+              value: https://bank.example.com
+            - name: AUTH_SERVICE_URL
+              value: http://harbor-auth:8000
+            - name: ACCOUNTS_SERVICE_URL
+              value: http://harbor-accounts:8000
+            - name: TRANSFERS_SERVICE_URL
+              value: http://harbor-transfers:8000
+            - name: TRANSACTIONS_SERVICE_URL
+              value: http://harbor-transactions:8000
+            - name: ASSISTANT_SERVICE_URL
+              value: http://harbor-assistant:8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harbor-gateway
+spec:
+  type: LoadBalancer
+  selector:
+    app: harbor-gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harbor-auth
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: harbor-auth
+  template:
+    metadata:
+      labels:
+        app: harbor-auth
     spec:
       securityContext:
         runAsNonRoot: true
@@ -22,9 +90,9 @@ spec:
         runAsGroup: 10001
         fsGroup: 10001
       containers:
-        - name: app
+        - name: auth
           image: harbor-banking:latest
-          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "services.auth.main:app", "--host", "0.0.0.0", "--port", "8000"]
           ports:
             - name: http
               containerPort: 8000
@@ -33,31 +101,24 @@ spec:
               value: production
             - name: SEED_DEMO_DATA
               value: "false"
-            - name: DATABASE_URL
-              value: sqlite:////data/banking.db
-            - name: PUBLIC_BASE_URL
-              value: https://bank.example.com
-            - name: OPENAI_API_KEY
+            - name: DATA_DIR
+              value: /data
+            - name: INTERNAL_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: harbor-banking-secrets
-                  key: openai-api-key
-                  optional: true
+                  key: internal-api-key
           volumeMounts:
-            - name: banking-data
+            - name: data
               mountPath: /data
           readinessProbe:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 10
-            periodSeconds: 20
           resources:
             requests:
               cpu: 100m
@@ -69,20 +130,18 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
-              drop:
-                - ALL
+              drop: ["ALL"]
       volumes:
-        - name: banking-data
+        - name: data
           persistentVolumeClaim:
-            claimName: harbor-banking-data
+            claimName: harbor-auth-data
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: harbor-banking-data
+  name: harbor-auth-data
 spec:
-  accessModes:
-    - ReadWriteOnce
+  accessModes: ["ReadWriteOnce"]
   resources:
     requests:
       storage: 1Gi
@@ -90,12 +149,327 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: harbor-banking
+  name: harbor-auth
 spec:
-  type: ClusterIP
   selector:
-    app: harbor-banking
+    app: harbor-auth
   ports:
     - name: http
-      port: 80
+      port: 8000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harbor-accounts
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: harbor-accounts
+  template:
+    metadata:
+      labels:
+        app: harbor-accounts
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: accounts
+          image: harbor-banking:latest
+          command: ["uvicorn", "services.accounts.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: DATA_DIR
+              value: /data
+            - name: AUTH_SERVICE_URL
+              value: http://harbor-auth:8000
+            - name: TRANSACTIONS_SERVICE_URL
+              value: http://harbor-transactions:8000
+            - name: INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: internal-api-key
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: harbor-accounts-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: harbor-accounts-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harbor-accounts
+spec:
+  selector:
+    app: harbor-accounts
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harbor-transfers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: harbor-transfers
+  template:
+    metadata:
+      labels:
+        app: harbor-transfers
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+      containers:
+        - name: transfers
+          image: harbor-banking:latest
+          command: ["uvicorn", "services.transfers.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: AUTH_SERVICE_URL
+              value: http://harbor-auth:8000
+            - name: ACCOUNTS_SERVICE_URL
+              value: http://harbor-accounts:8000
+            - name: TRANSACTIONS_SERVICE_URL
+              value: http://harbor-transactions:8000
+            - name: INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: internal-api-key
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harbor-transfers
+spec:
+  selector:
+    app: harbor-transfers
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harbor-transactions
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: harbor-transactions
+  template:
+    metadata:
+      labels:
+        app: harbor-transactions
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: transactions
+          image: harbor-banking:latest
+          command: ["uvicorn", "services.transactions.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: DATA_DIR
+              value: /data
+            - name: AUTH_SERVICE_URL
+              value: http://harbor-auth:8000
+            - name: INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: internal-api-key
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: harbor-transactions-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: harbor-transactions-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harbor-transactions
+spec:
+  selector:
+    app: harbor-transactions
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harbor-assistant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: harbor-assistant
+  template:
+    metadata:
+      labels:
+        app: harbor-assistant
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+      containers:
+        - name: assistant
+          image: harbor-banking:latest
+          command: ["uvicorn", "services.assistant.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: AUTH_SERVICE_URL
+              value: http://harbor-auth:8000
+            - name: INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: internal-api-key
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: openai-api-key
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harbor-assistant
+spec:
+  selector:
+    app: harbor-assistant
+  ports:
+    - name: http
+      port: 8000
       targetPort: http

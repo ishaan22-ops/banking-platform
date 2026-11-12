@@ -1,0 +1,153 @@
+services:
+  gateway:
+    build: .
+    command: ["uvicorn", "services.gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: development
+      PUBLIC_BASE_URL: http://localhost:8000
+      AUTH_SERVICE_URL: http://auth:8000
+      ACCOUNTS_SERVICE_URL: http://accounts:8000
+      TRANSFERS_SERVICE_URL: http://transfers:8000
+      TRANSACTIONS_SERVICE_URL: http://transactions:8000
+      ASSISTANT_SERVICE_URL: http://assistant:8000
+    depends_on:
+      auth:
+        condition: service_healthy
+      accounts:
+        condition: service_healthy
+      transfers:
+        condition: service_healthy
+      transactions:
+        condition: service_healthy
+      assistant:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  auth:
+    build: .
+    command: ["uvicorn", "services.auth.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      APP_ENV: development
+      DATA_DIR: /data
+      SEED_DEMO_DATA: "true"
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-local-development-key}
+    volumes:
+      - auth-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  accounts:
+    build: .
+    command: ["uvicorn", "services.accounts.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATA_DIR: /data
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-local-development-key}
+      AUTH_SERVICE_URL: http://auth:8000
+      TRANSACTIONS_SERVICE_URL: http://transactions:8000
+    volumes:
+      - account-data:/data
+    depends_on:
+      auth:
+        condition: service_healthy
+      transactions:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  transfers:
+    build: .
+    command: ["uvicorn", "services.transfers.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-local-development-key}
+      AUTH_SERVICE_URL: http://auth:8000
+      ACCOUNTS_SERVICE_URL: http://accounts:8000
+      TRANSACTIONS_SERVICE_URL: http://transactions:8000
+    depends_on:
+      auth:
+        condition: service_healthy
+      accounts:
+        condition: service_healthy
+      transactions:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  transactions:
+    build: .
+    command: ["uvicorn", "services.transactions.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATA_DIR: /data
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-local-development-key}
+      AUTH_SERVICE_URL: http://auth:8000
+    volumes:
+      - transaction-data:/data
+    depends_on:
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  assistant:
+    build: .
+    command: ["uvicorn", "services.assistant.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-local-development-key}
+      AUTH_SERVICE_URL: http://auth:8000
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    depends_on:
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  auth-data:
+  account-data:
+  transaction-data:

@@ -7,6 +7,8 @@ let registering = false;
 let transactionOffset = 0;
 const pageSize = 20;
 let searchTimer;
+let depositIdempotencyKey;
+let transferIdempotencyKey;
 
 function getToken() {
   return sessionStorage.getItem(tokenKey);
@@ -24,7 +26,11 @@ async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers });
   if (response.status === 204) return null;
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || "Something went wrong. Please try again.");
+  if (!response.ok) {
+    const error = new Error(data.detail || "Something went wrong. Please try again.");
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -50,10 +56,14 @@ async function loadAccount() {
     const account = await api("/api/account");
     document.querySelector("#balance").textContent = formatMoney(account.balance_cents);
     document.querySelector("#account-email").textContent = account.email;
+    setMessage(document.querySelector("#account-message"), "");
   } catch (error) {
-    setMessage(authMessage, error.message, true);
-    sessionStorage.removeItem(tokenKey);
-    showAuth();
+    if (error.status === 401) {
+      sessionStorage.removeItem(tokenKey);
+      showAuth();
+    } else {
+      setMessage(document.querySelector("#account-message"), error.message, true);
+    }
   }
 }
 
@@ -154,13 +164,19 @@ document.querySelector("#add-demo-funds").addEventListener("click", async (event
   const button = event.currentTarget;
   const message = document.querySelector("#demo-funds-message");
   button.disabled = true;
+  depositIdempotencyKey ||= crypto.randomUUID();
   setMessage(message, "Adding simulated funds...");
   try {
-    await api("/api/demo-deposits", { method: "POST" });
+    await api("/api/demo-deposits", {
+      method: "POST",
+      headers: { "Idempotency-Key": depositIdempotencyKey },
+    });
+    depositIdempotencyKey = null;
     setMessage(message, "$500 in simulated funds added.");
     await loadAccount();
     await loadTransactions(true);
   } catch (error) {
+    if ([400, 409, 422].includes(error.status)) depositIdempotencyKey = null;
     setMessage(message, error.message, true);
   } finally {
     button.disabled = false;
@@ -172,6 +188,7 @@ document.querySelector("#transfer-form").addEventListener("submit", async (event
   const button = event.currentTarget.querySelector("button");
   const message = document.querySelector("#transfer-message");
   button.disabled = true;
+  transferIdempotencyKey ||= crypto.randomUUID();
   setMessage(message, "Processing demo transfer...");
   const payload = {
     recipient_email: document.querySelector("#recipient").value,
@@ -179,13 +196,19 @@ document.querySelector("#transfer-form").addEventListener("submit", async (event
     description: document.querySelector("#description").value || "Demo transfer",
   };
   try {
-    await api("/api/transfers", { method: "POST", body: JSON.stringify(payload) });
+    await api("/api/transfers", {
+      method: "POST",
+      headers: { "Idempotency-Key": transferIdempotencyKey },
+      body: JSON.stringify(payload),
+    });
+    transferIdempotencyKey = null;
     event.currentTarget.reset();
     document.querySelector("#description").value = "Demo transfer";
     setMessage(message, "Demo transfer completed.");
     await loadAccount();
     await loadTransactions(true);
   } catch (error) {
+    if ([400, 409, 422].includes(error.status)) transferIdempotencyKey = null;
     setMessage(message, error.message, true);
   } finally {
     button.disabled = false;

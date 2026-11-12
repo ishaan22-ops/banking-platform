@@ -4,4 +4,6 @@ __pycache__
 .pytest_cache
 *.py[cod]
 *.db
-tests
+.gitignore
+tests/
+requirements-dev.txt
