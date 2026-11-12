@@ -58,7 +58,7 @@ Search uses a dedicated service/database. Filters are scoped to the signed-in us
 
 ## Container image
 
-The root `Dockerfile` builds one shared application image; each service starts a different module. `postgres/Dockerfile` extends the official PostgreSQL image with first-start initialization for the five service-owned PostgreSQL databases and roles. Compose provides a complete local stack.
+The root `Dockerfile` builds one shared application image; each service starts a different module. `postgres/Dockerfile` extends the official PostgreSQL image with initialization for the five service-owned PostgreSQL databases and roles. Compose runs an idempotent initialization job after PostgreSQL is healthy, so existing named volumes can be repaired without deleting data.
 
 ```powershell
 docker build -t harbor-banking:latest .
@@ -67,7 +67,7 @@ docker build -t harbor-banking-postgres:latest .\postgres
 
 ## Kubernetes
 
-The manifests create one Deployment per application service, internal ClusterIP Services, a public LoadBalancer for the gateway, a PostgreSQL StatefulSet with isolated per-service databases and roles, and a MongoDB StatefulSet for transaction search. Gateway replicas share only their own PostgreSQL database; services do not share database credentials.
+The manifests create one Deployment per application service, internal ClusterIP Services, a public LoadBalancer for the gateway, a PostgreSQL StatefulSet with isolated per-service databases and roles, and a MongoDB StatefulSet for transaction search. A PostgreSQL initialization Job provisions the databases idempotently, including when a persistent volume already exists. Gateway replicas share only their own PostgreSQL database; services do not share database credentials.
 
 1. Build and push both images to a registry your cluster can access, then change the image references in `k8s/deployment.yaml`.
 2. Set `PUBLIC_BASE_URL` in the gateway deployment to the public HTTPS origin.

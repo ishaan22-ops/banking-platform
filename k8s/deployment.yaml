@@ -599,6 +599,63 @@ spec:
       port: 5432
       targetPort: postgres
 ---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: harbor-postgres-init
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: initialize-databases
+          image: harbor-banking-postgres:latest
+          command: ["bash", "/scripts/init-databases.sh"]
+          env:
+            - name: PGHOST
+              value: harbor-postgres
+            - name: PGPORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: harbor_admin
+            - name: POSTGRES_DB
+              value: postgres
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: postgres-admin-password
+            - name: GATEWAY_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: gateway-db-password
+            - name: AUTH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: auth-db-password
+            - name: ACCOUNTS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: accounts-db-password
+            - name: TRANSFERS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: transfers-db-password
+            - name: ASSISTANT_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: assistant-db-password
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:

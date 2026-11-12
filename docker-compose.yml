@@ -1,5 +1,6 @@
 services:
   postgres:
+    image: harbor-banking-postgres:latest
     build:
       context: ./postgres
     environment:
@@ -21,8 +22,32 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  postgres-init:
+    image: harbor-banking-postgres:latest
+    build:
+      context: ./postgres
+    entrypoint: ["bash", "/scripts/init-databases.sh"]
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      POSTGRES_USER: harbor_admin
+      POSTGRES_DB: postgres
+      PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD:-harbor-admin-local-only}
+      GATEWAY_DB_PASSWORD: ${GATEWAY_DB_PASSWORD:-gateway-local-only}
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:-auth-local-only}
+      ACCOUNTS_DB_PASSWORD: ${ACCOUNTS_DB_PASSWORD:-accounts-local-only}
+      TRANSFERS_DB_PASSWORD: ${TRANSFERS_DB_PASSWORD:-transfers-local-only}
+      ASSISTANT_DB_PASSWORD: ${ASSISTANT_DB_PASSWORD:-assistant-local-only}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
   mongo:
     image: mongo:7
+    command: ["mongod", "--bind_ip", "0.0.0.0"]
     environment:
       MONGO_INITDB_ROOT_USERNAME: harbor_admin
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-harbor-mongo-root-local}
@@ -64,6 +89,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       auth:
         condition: service_healthy
       accounts:
@@ -99,6 +126,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 5s
@@ -124,6 +153,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       auth:
         condition: service_healthy
       transactions:
@@ -154,6 +185,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       auth:
         condition: service_healthy
       accounts:
@@ -213,6 +246,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       auth:
         condition: service_healthy
     healthcheck:
