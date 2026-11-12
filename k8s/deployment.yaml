@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harbor-banking
+  labels:
+    app: harbor-banking
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: harbor-banking
+  template:
+    metadata:
+      labels:
+        app: harbor-banking
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: app
+          image: harbor-banking:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: APP_ENV
+              value: production
+            - name: SEED_DEMO_DATA
+              value: "false"
+            - name: DATABASE_URL
+              value: sqlite:////data/banking.db
+            - name: PUBLIC_BASE_URL
+              value: https://bank.example.com
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-banking-secrets
+                  key: openai-api-key
+                  optional: true
+          volumeMounts:
+            - name: banking-data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: banking-data
+          persistentVolumeClaim:
+            claimName: harbor-banking-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: harbor-banking-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harbor-banking
+spec:
+  type: ClusterIP
+  selector:
+    app: harbor-banking
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

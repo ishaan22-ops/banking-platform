@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Manage simulated accounts, demo transfers, and transaction history with Harbor, a secure banking application demo.">
+    <meta name="theme-color" content="#0d2942">
+    <title>Harbor — Banking, made clear</title>
+    <link rel="canonical" href="__PUBLIC_BASE_URL__/">
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Harbor home"><span class="brand-mark">H</span> harbor</a>
+      <span class="demo-label">DEMO BANKING</span>
+    </header>
+    <main>
+      <section id="auth-view" class="auth-layout">
+        <div class="hero">
+          <p class="eyebrow">YOUR MONEY, IN VIEW</p>
+          <h1>Banking, made <em>clear.</em></h1>
+          <p class="hero-copy">A simple, secure demo space to explore everyday banking. No real money moves here.</p>
+          <div class="trust-note"><span class="pulse"></span> Simulated accounts · Demo transfers only</div>
+        </div>
+        <section class="auth-card" aria-labelledby="auth-heading">
+          <p class="eyebrow">WELCOME TO HARBOR</p>
+          <h2 id="auth-heading">Sign in to your account</h2>
+          <p class="muted">New here? <button class="text-button" id="toggle-auth" type="button">Create an account</button></p>
+          <form id="auth-form">
+            <label for="email">Email address</label>
+            <input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required>
+            <button id="auth-submit" class="primary-button" type="submit">Sign in <span aria-hidden="true">→</span></button>
+            <p id="auth-message" class="form-message" role="status"></p>
+          </form>
+          <p class="demo-hint">Local demo: <strong>demo@example.com</strong> · <strong>Demo123!</strong></p>
+        </section>
+      </section>
+
+      <section id="dashboard" class="dashboard hidden">
+        <div class="dashboard-heading">
+          <div><p class="eyebrow">YOUR HARBOR</p><h1>Good to see you.</h1></div>
+          <button id="logout" class="secondary-button" type="button">Sign out</button>
+        </div>
+        <div class="summary-grid">
+          <article class="balance-card">
+            <div class="card-top"><span>Available balance</span><span class="balance-icon" aria-hidden="true">$</span></div>
+            <p id="balance" class="balance-amount">$0.00</p>
+            <p id="account-email" class="balance-caption"></p>
+            <span class="demo-chip">SIMULATED BALANCE</span>
+            <button id="add-demo-funds" class="demo-funds-button" type="button">Add $500 demo funds</button>
+            <p id="demo-funds-message" class="demo-funds-message" role="status"></p>
+          </article>
+          <section class="panel transfer-panel">
+            <div class="panel-heading"><div><p class="eyebrow">MOVE MONEY</p><h2>Demo transfer</h2></div><span class="panel-icon" aria-hidden="true">↗</span></div>
+            <form id="transfer-form">
+              <label for="recipient">Recipient email</label>
+              <input id="recipient" name="recipient" type="email" maxlength="254" placeholder="friend@example.com" required>
+              <label for="amount">Amount (USD)</label>
+              <input id="amount" name="amount" type="number" min="0.01" max="1000000" step="0.01" placeholder="0.00" required>
+              <label for="description">Note</label>
+              <input id="description" name="description" type="text" maxlength="100" value="Demo transfer">
+              <button class="primary-button" type="submit">Transfer funds <span aria-hidden="true">→</span></button>
+              <p id="transfer-message" class="form-message" role="status"></p>
+            </form>
+          </section>
+        </div>
+        <section class="panel transactions-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">YOUR ACTIVITY</p><h2>Transaction history</h2></div>
+            <label class="search-wrap"><span class="visually-hidden">Search transactions</span><span aria-hidden="true">⌕</span><input id="transaction-search" type="search" maxlength="100" placeholder="Search activity"></label>
+          </div>
+          <div id="transaction-list" class="transaction-list"></div>
+          <button id="load-more" class="secondary-button hidden" type="button">Load more</button>
+        </section>
+        <section class="panel chat-panel">
+          <div class="panel-heading"><div><p class="eyebrow">HARBOR ASSISTANT</p><h2>How can I help?</h2></div><span class="chat-status">● Here to help</span></div>
+          <p class="muted">Ask about demo transfers, balances, transaction search, or sign-in. Please don't share sensitive information.</p>
+          <form id="chat-form" class="chat-form">
+            <label class="visually-hidden" for="chat-question">Ask Harbor Assistant</label>
+            <input id="chat-question" maxlength="1000" placeholder="Type a question..." required>
+            <button class="primary-button" type="submit">Ask <span aria-hidden="true">→</span></button>
+          </form>
+          <p id="chat-answer" class="chat-answer" role="status"></p>
+        </section>
+        <p class="footer-note">Harbor is a demonstration application. Balances and transfers are simulated and have no real-world value.</p>
+      </section>
+    </main>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
